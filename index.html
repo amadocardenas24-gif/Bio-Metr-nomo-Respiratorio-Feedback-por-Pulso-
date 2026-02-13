@@ -3,80 +3,84 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ultra-Filtro Vital</title>
+    <title>Escucha Directa Vital</title>
     <style>
-        body { background: #000; color: #00FF00; font-family: monospace; text-align: center; padding: 10px; }
-        #monitor { border: 3px solid #00FF00; background: #010; padding: 30px; margin: 20px auto; max-width: 300px; border-radius: 20px; }
-        .bpm-grande { font-size: 70px; color: #FFD700; text-shadow: 0 0 20px #DAA520; }
-        #onda { width: 100%; height: 40px; background: #020; margin-top: 15px; border-radius: 5px; position: relative; }
-        #pulso-v { position: absolute; width: 0%; height: 100%; background: #f00; opacity: 0.5; }
-        .btn { padding: 20px; width: 100%; background: #008080; color: white; border: none; border-radius: 15px; font-weight: bold; cursor: pointer; }
+        body { background: #000; color: #00FF00; font-family: monospace; text-align: center; padding: 20px; }
+        .consola { border: 2px solid #00FF00; padding: 25px; background: #010; border-radius: 20px; }
+        #vumetro { width: 100%; height: 20px; background: #020; border: 1px solid #0f0; margin: 15px 0; overflow: hidden; }
+        #barra { width: 0%; height: 100%; background: #0f0; transition: width 0.1s; }
+        .instruccion { color: #FFD700; font-size: 14px; margin-bottom: 20px; }
+        #btn-play { padding: 20px; background: #8B0000; color: #fff; border: none; border-radius: 50px; cursor: pointer; font-weight: bold; width: 100%; }
     </style>
 </head>
 <body>
 
-    <h2>SINTONÍA FINA: PULSO REAL</h2>
-    
-    <div id="monitor">
-        <div id="onda"><div id="pulso-v"></div></div>
-        <span id="bpm-display" class="bpm-grande">--</span><br>
-        BPM REAL
-        <hr>
-        ESTADO: <span id="st" style="color:#00FFFF">ESTABILIZANDO</span>
+    <h2>MONITOR DE AUDIO DIRECTO</h2>
+    <p class="instruccion">USA AURICULARES<br>El sistema amplifica el sonido real del pecho.</p>
+
+    <div class="consola">
+        NIVEL DE ENTRADA:
+        <div id="vumetro"><div id="barra"></div></div>
+        ESTADO: <span id="status">EN ESPERA</span>
     </div>
 
-    <button class="btn" onclick="iniciarUltraFiltro()">INICIAR LECTURA PURA</button>
+    <br>
+    <button id="btn-play" onclick="activarAudioDirecto()">ABRIR CANAL DE AUDIO</button>
 
     <script>
-        let ultimoT = 0, listaBpm = [], aCtx;
+        let aCtx, analista, dataArray;
 
-        async function iniciarUltraFiltro() {
-            if (!aCtx) aCtx = new (window.AudioContext || window.webkitAudioContext)();
-            document.querySelector('.btn').style.display = 'none';
+        async function activarAudioDirecto() {
+            document.getElementById('btn-play').style.display = 'none';
+            aCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-            window.addEventListener('devicemotion', (e) => {
-                let z = Math.abs(e.acceleration.z || 0);
+            try {
+                // Pedimos el audio sin procesamientos automáticos para no perder el latido
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: false, 
+                        noiseSuppression: false, 
+                        autoGainControl: true 
+                    } 
+                });
+
+                const fuente = aCtx.createMediaStreamSource(stream);
                 
-                // FILTRO DE UMBRAL ALTO (Evita ruido)
-                if (z > 0.15) { 
-                    let ahora = Date.now();
-                    let intervalo = ahora - ultimoT;
+                // FILTRO DE SINTONÍA: Solo dejamos pasar frecuencias de 20Hz a 100Hz (el corazón)
+                const filtro = aCtx.createBiquadFilter();
+                filtro.type = "lowpass";
+                filtro.frequency.value = 100;
+                filtro.Q.value = 1.5;
 
-                    // BLOQUEO DE REBOTE (Mínimo 600ms = Máximo 100 BPM)
-                    // Si tu pulso es mayor a 100 en reposo, ajustaremos esto.
-                    if (intervalo > 600) { 
-                        let bpmInstantaneo = 60000 / intervalo;
-                        
-                        if (bpmInstantaneo < 180) {
-                            listaBpm.push(bpmInstantaneo);
-                            if (listaBpm.length > 8) listaBpm.shift();
+                // AMPLIFICADOR DE GANANCIA: Sube el volumen del latido débil
+                const ganancia = aCtx.createGain();
+                ganancia.gain.value = 8.0; // Multiplica x8 la señal original
 
-                            let promedio = listaBpm.reduce((a, b) => a + b) / listaBpm.length;
-                            document.getElementById('bpm-display').innerText = Math.round(promedio);
-                            
-                            sonarLatido();
-                            animarPulso();
-                        }
-                        ultimoT = ahora;
-                    }
-                }
-            });
+                // ANALIZADOR VISUAL
+                analista = aCtx.createAnalyser();
+                analista.fftSize = 256;
+                dataArray = new Uint8Array(analista.frequencyBinCount);
+
+                // Conexión del circuito
+                fuente.connect(filtro);
+                filtro.connect(ganancia);
+                ganancia.connect(analista);
+                ganancia.connect(aCtx.destination); // Envío directo a auriculares
+
+                document.getElementById('status').innerText = "ESCUCHANDO...";
+                document.getElementById('status').style.color = "#0f0";
+                
+                actualizarVumetro();
+            } catch (err) {
+                alert("Error al acceder al micrófono: " + err);
+            }
         }
 
-        function sonarLatido() {
-            let o = aCtx.createOscillator();
-            let g = aCtx.createGain();
-            o.frequency.value = 60; // Tono muy grave, como un tambor
-            g.gain.setValueAtTime(0.5, aCtx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.001, aCtx.currentTime + 0.2);
-            o.connect(g).connect(aCtx.destination);
-            o.start(); o.stop(aCtx.currentTime + 0.2);
-        }
-
-        function animarPulso() {
-            let p = document.getElementById('pulso-v');
-            p.style.width = "100%"; p.style.opacity = "1";
-            setTimeout(() => { p.style.width = "0%"; p.style.opacity = "0"; }, 200);
+        function actualizarVumetro() {
+            analista.getByteFrequencyData(dataArray);
+            let promedio = dataArray.reduce((a, b) => a + b) / dataArray.length;
+            document.getElementById('barra').style.width = (promedio * 2) + "%";
+            requestAnimationFrame(actualizarVumetro);
         }
     </script>
 </body>
